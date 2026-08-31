@@ -5,7 +5,7 @@ import { motion } from "motion/react";
 import SwaggerUIBundle from "swagger-ui-dist/swagger-ui-bundle.js";
 
 const FLOW = [
-  "① Auth로 로그인해 accessToken 발급",
+  "① POST /auth/signup으로 테스트 계정 생성 후 accessToken 발급",
   "② 우측 상단 Authorize에 토큰 입력",
   "③ 카드 생성 → 판매/교환 → 구매·오퍼 → 뽑기 → 알림 흐름 테스트",
 ];
@@ -62,8 +62,7 @@ export default function Home() {
             ))}
           </motion.ul>
           <div className="flex flex-wrap gap-2 text-xs text-zinc-300">
-            <span className="rounded bg-black/30 px-2 py-1 font-mono">demo1@petcard.io / password123! (멍집사)</span>
-            <span className="rounded bg-black/30 px-2 py-1 font-mono">demo2@petcard.io / password123! (냥덕후)</span>
+            <span className="rounded bg-black/30 px-2 py-1 font-mono">계정: /auth/signup으로 직접 생성</span>
             <span className="rounded bg-black/30 px-2 py-1 font-mono">소셜: provider + 아무 providerToken</span>
           </div>
         </div>

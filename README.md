@@ -19,4 +19,6 @@ npm install
 npm run dev
 ```
 
-`http://localhost:4000` 에서 Swagger UI로 전체 API를 실행해볼 수 있다. 명세 수정은 `openapi/openapi.yaml` 기준으로 반영한다.
+터미널에 표시된 주소에서 Swagger UI로 전체 API를 실행해볼 수 있다 (포트는 자동 할당, Swagger 서버가 상대경로라 어느 포트·배포 환경에서든 동작). 명세 수정은 `openapi/openapi.yaml` 기준으로 반영한다.
+
+시드 데모 계정의 이메일·비밀번호는 `apps/mock-api/.env`로만 주입된다 (`.env.example` 참고). env가 없으면 데모 계정은 로그인 불가 상태로 생성되며, `POST /auth/signup`으로 계정을 만들어 테스트하면 된다.

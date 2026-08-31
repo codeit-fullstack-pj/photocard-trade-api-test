@@ -11,8 +11,10 @@ info:
     - 생성 한도: 하루 무료 5개(Asia/Seoul 자정 리셋), 초과분 100포인트/개
     - 이미지는 카드 ID 기반 조회. `pixel`(도트) 공개, `original`은 소유자만
 servers:
+  - url: /api/v1
+    description: 테스트 페이지와 같은 origin의 목 백엔드 (로컬·배포 공용)
   - url: http://localhost:4000/api/v1
-    description: 목 서버 (Swagger 테스트 페이지 전용 백엔드)
+    description: 외부 도구에서 로컬 목 서버를 직접 호출할 때의 예시
 tags:
   - name: Auth
   - name: User

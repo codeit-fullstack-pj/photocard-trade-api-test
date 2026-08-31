@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 버전 | v0.1.0 (2026-08-31 초안) |
-| Base URL | `/api/v1` (목 서버: `http://localhost:4000/api/v1`) |
+| Base URL | `/api/v1` (테스트 페이지와 같은 origin — 로컬·배포 공용) |
 | 원본 스키마 | [`openapi/openapi.yaml`](../openapi/openapi.yaml) — Swagger UI가 읽는 단일 소스. 수정본은 이 파일 기준으로 반영 |
 
 ## 1. 개요

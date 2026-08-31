@@ -288,9 +288,29 @@ function seed(): DB {
     return user;
   };
 
-  mkUser({ id: "usr001", name: "김건우", nickname: "멍집사", email: "demo1@petcard.io", password: "password123!", point: 1000 });
-  mkUser({ id: "usr002", name: "이수민", nickname: "냥덕후", email: "demo2@petcard.io", password: "password123!", point: 500 });
-  mkUser({ id: "usr003", name: "박소셜", nickname: "구글러버", providers: [{ provider: "GOOGLE", providerId: "google-demo-1" }], point: 300 });
+  mkUser({
+    id: "usr001",
+    name: "김건우",
+    nickname: "멍집사",
+    email: process.env.DEMO_USER1_EMAIL ?? null,
+    password: process.env.DEMO_USER1_PASSWORD ?? null,
+    point: 1000,
+  });
+  mkUser({
+    id: "usr002",
+    name: "이수민",
+    nickname: "냥덕후",
+    email: process.env.DEMO_USER2_EMAIL ?? null,
+    password: process.env.DEMO_USER2_PASSWORD ?? null,
+    point: 500,
+  });
+  mkUser({
+    id: "usr003",
+    name: "박소셜",
+    nickname: "구글러버",
+    providers: [{ provider: "GOOGLE", providerId: `google-seed-${crypto.randomUUID()}` }],
+    point: 300,
+  });
 
   const mkCard = (id: string, owner: string, createdBy: string, title: string, category: Category, description: string | null): Card => {
     const scores = analyzeDummy(category);
