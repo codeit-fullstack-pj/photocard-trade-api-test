@@ -1,0 +1,5 @@
+@import "tailwindcss";
+
+.swagger-ui .topbar {
+  display: none;
+}
