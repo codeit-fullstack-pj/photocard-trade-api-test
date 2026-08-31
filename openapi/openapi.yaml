@@ -1,0 +1,1141 @@
+openapi: 3.0.3
+info:
+  title: 펫 카드(가칭) API
+  version: 0.1.0
+  description: |
+    반려동물 사진을 업로드하면 관상 지수를 분석해 카드를 만들고, 카드를 소장·판매·교환하는 서비스의 API.
+
+    - 인증: `Authorization: Bearer <JWT>` (실서비스는 Supabase Auth 예정, 목 서버는 더미 토큰 발급)
+    - 관상 분석은 서버 측 티처블 머신 모델 예정. 현재 목 서버는 더미(랜덤) 점수 반환
+    - 카드 생성은 원샷: 업로드 → 분석 → 태그 산정 → 도트 변환 → 생성
+    - 생성 한도: 하루 무료 5개(Asia/Seoul 자정 리셋), 초과분 100포인트/개
+    - 이미지는 카드 ID 기반 조회. `pixel`(도트) 공개, `original`은 소유자만
+servers:
+  - url: http://localhost:4000/api/v1
+    description: 목 서버 (Swagger 테스트 페이지 전용 백엔드)
+tags:
+  - name: Auth
+  - name: User
+  - name: Card
+  - name: Sale
+  - name: Exchange
+  - name: Point
+  - name: Notification
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/signup:
+    post:
+      tags: [Auth]
+      operationId: signup
+      summary: 이메일 가입
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name, nickname]
+              properties:
+                email: { type: string, format: email, maxLength: 100 }
+                password: { type: string, minLength: 8, maxLength: 72 }
+                name: { type: string, maxLength: 30, description: 실명 }
+                nickname: { type: string, maxLength: 20, description: 별명 }
+      responses:
+        '201':
+          description: 가입 완료
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '409':
+          description: EMAIL_EXISTS
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: 이메일 로그인
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: 로그인 성공
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/social:
+    post:
+      tags: [Auth]
+      operationId: socialLogin
+      summary: 소셜 로그인/가입
+      description: '기존 연동이 있으면 로그인, 없으면 가입 후 `isNewUser: true`. 목 서버는 providerToken을 검증하지 않는다.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, providerToken]
+              properties:
+                provider: { $ref: '#/components/schemas/Provider' }
+                providerToken: { type: string, description: 소셜 플랫폼에서 받은 토큰 }
+      responses:
+        '200':
+          description: '로그인/가입 성공. 신규 가입 시 nickname·name은 제공자 프로필에서 유래(없으면 자동 생성, §3.7)'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/TokenResponse'
+                  - type: object
+                    required: [isNewUser]
+                    properties:
+                      isNewUser: { type: boolean }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401':
+          description: 무효한 providerToken
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshToken
+      summary: 토큰 재발급
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: 재발급 성공 (refreshToken 회전 — 이전 토큰은 무효화)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: 로그아웃 (본인 소유 refreshToken만 무효화)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '204': { description: 로그아웃 완료 }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users/me:
+    get:
+      tags: [User]
+      operationId: getMe
+      summary: 내 정보 조회
+      responses:
+        '200':
+          description: 내 정보
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserMe' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [User]
+      operationId: updateMe
+      summary: 내 정보 수정 (name, nickname)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, maxLength: 30 }
+                nickname: { type: string, maxLength: 20 }
+      responses:
+        '200':
+          description: 수정된 내 정보
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserMe' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [User]
+      operationId: deleteMe
+      summary: 회원 탈퇴 (소프트 삭제·익명화)
+      description: 이메일·비밀번호·소셜 연동 파기, 닉네임 익명화, 전 refreshToken 무효화. 진행 중 판매글 CANCELED, 보낸 PENDING 오퍼 CANCELED, 받은 PENDING 오퍼 REJECTED, 보유 카드 소프트 삭제. 거래 이력은 보존된다.
+      responses:
+        '204': { description: 탈퇴 완료 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users/me/password:
+    patch:
+      tags: [User]
+      operationId: changePassword
+      summary: 비밀번호 변경 (성공 시 해당 유저의 모든 refreshToken 무효화)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8, maxLength: 72 }
+      responses:
+        '204': { description: 변경 완료 }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: NO_PASSWORD_ACCOUNT (소셜 전용 계정)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /users/me/providers:
+    post:
+      tags: [User]
+      operationId: linkProvider
+      summary: 소셜 추가 연동
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, providerToken]
+              properties:
+                provider: { $ref: '#/components/schemas/Provider' }
+                providerToken: { type: string }
+      responses:
+        '200':
+          description: 연동 후 내 정보
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserMe' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: PROVIDER_ALREADY_LINKED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /users/me/providers/{provider}:
+    delete:
+      tags: [User]
+      operationId: unlinkProvider
+      summary: 소셜 연동 해지
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Provider' }
+      responses:
+        '204': { description: 해지 완료 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: LAST_PROVIDER (마지막 로그인 수단)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /users/me/cards:
+    get:
+      tags: [User]
+      operationId: listMyCards
+      summary: 내 보유 카드 목록 (판매 여부 무관)
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: category
+          in: query
+          schema: { $ref: '#/components/schemas/Category' }
+      responses:
+        '200':
+          description: 카드 목록 (originalImageUrl, sale 요약 포함)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, limit, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/CardOwned' }
+                  page: { type: integer }
+                  limit: { type: integer }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users/me/exchanges:
+    get:
+      tags: [User]
+      operationId: listMyExchanges
+      summary: 내가 보낸 교환 오퍼 목록
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ExchangeStatus' }
+      responses:
+        '200':
+          description: 오퍼 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, limit, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Exchange' }
+                  page: { type: integer }
+                  limit: { type: integer }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /cards:
+    post:
+      tags: [Card]
+      operationId: createCard
+      summary: 카드 생성 원샷 (업로드→분석→태그→도트 변환→생성)
+      description: |
+        하루 무료 5개(Asia/Seoul 자정 리셋). 소진 시 `usePoint: true`면 100포인트 차감 후 생성, 없으면 409 DAILY_LIMIT_EXCEEDED.
+        생성 카운트는 성공 시점에 증가하며 이후 카드 삭제·소유권 이전과 무관하다.
+        분석 점수는 현재 더미(랜덤)이며 응답 `card.scores`와 카드 `Field`에 저장된다.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image, title, category]
+              properties:
+                image: { type: string, format: binary, description: '동물 사진 (jpeg/png/webp, 최대 10MB)' }
+                title: { type: string, maxLength: 30 }
+                category: { $ref: '#/components/schemas/Category' }
+                description: { type: string }
+                usePoint: { type: boolean, default: false, description: 무료 한도 소진 시 100P 차감 동의 }
+      responses:
+        '201':
+          description: 생성 결과 (포인트 차감 여부·잔액 포함)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [card, point, pointUsed]
+                properties:
+                  card: { $ref: '#/components/schemas/CardOwned' }
+                  point: { type: integer, format: int64, description: 생성 후 내 잔여 포인트 }
+                  pointUsed: { type: integer, description: 이번 생성에 차감된 포인트 (무료면 0) }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402':
+          description: INSUFFICIENT_POINT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: DAILY_LIMIT_EXCEEDED (usePoint로 재시도 가능)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /cards/{cardId}:
+    parameters:
+      - $ref: '#/components/parameters/CardId'
+    get:
+      tags: [Card]
+      operationId: getCard
+      summary: 카드 상세 (공개)
+      security: []
+      responses:
+        '200':
+          description: 공개 표현 — 원본 이미지 URL 미포함. 소유자용 표현(CardOwned)은 /users/me/cards 및 소유자 전용 응답에서 제공
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Card' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Card]
+      operationId: updateCard
+      summary: 카드 수정 (title, description — 소유자만)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                title: { type: string, maxLength: 30 }
+                description: { type: string }
+      responses:
+        '200':
+          description: 수정된 카드
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CardOwned' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Card]
+      operationId: deleteCard
+      summary: 카드 소프트 삭제 (소유자만, 판매 게시 중이면 불가)
+      description: 삭제 시 이 카드로 보낸 PENDING 오퍼는 자동 CANCELED. 거래 이력이 참조하는 카드는 소프트 삭제로만 처리되어 이력이 보존된다.
+      responses:
+        '204': { description: 삭제 완료 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: ALREADY_ON_SALE (판매글 취소 후 삭제 가능)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /cards/{cardId}/image:
+    get:
+      tags: [Card]
+      operationId: getCardImage
+      summary: 카드 이미지 조회 (카드 ID 기반)
+      description: '`pixel`(도트 변환본)은 공개. `original`(원본)은 소유자만 — 비인증 요청은 401, 인증했으나 비소유자는 403. 인증은 선택적(Bearer 토큰이 있으면 소유자 판정에 사용).'
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CardId'
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [pixel, original]
+            default: pixel
+      responses:
+        '200':
+          description: 이미지 바이너리
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+            image/svg+xml:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /sales:
+    post:
+      tags: [Sale]
+      operationId: createSale
+      summary: 판매글 등록 (SALE=포인트 판매 / EXCHANGE=교환)
+      description: 본인 소유이며 판매 게시 중(ON_SALE)이 아닌 카드만 가능. SALE은 price 필수(wish* 무시), EXCHANGE는 price 무시.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/SaleCreateSale'
+                - $ref: '#/components/schemas/SaleCreateExchange'
+              discriminator:
+                propertyName: type
+                mapping:
+                  SALE: '#/components/schemas/SaleCreateSale'
+                  EXCHANGE: '#/components/schemas/SaleCreateExchange'
+      responses:
+        '201':
+          description: 등록된 판매글
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sale' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: ALREADY_ON_SALE
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [Sale]
+      operationId: listSales
+      summary: 판매글 목록 (공개)
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/SaleType' }
+        - name: status
+          in: query
+          explode: true
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/SaleStatus' }
+          description: 매진여부 상태 필터 (중복 선택 가능, 미전달 시 ON_SALE)
+        - name: category
+          in: query
+          schema: { $ref: '#/components/schemas/Category' }
+          description: 카드 카테고리 필터 (미전달 시 둘다)
+        - name: trait
+          in: query
+          explode: true
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/TraitCode' }
+          description: 선택한 지수가 카드의 최고 지수 2개(태그 구성 지수)에 포함된 판매글만 (중복 선택 시 OR)
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 50 }
+          description: 검색어 — 판매글 제목·설명 + 카드 제목·태그
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [LATEST, OLDEST, PRICE_ASC, PRICE_DESC]
+            default: LATEST
+          description: 가격 정렬은 price가 있는 SALE형 우선, EXCHANGE형은 후순위 최신순
+        - name: sellerId
+          in: query
+          schema: { $ref: '#/components/schemas/Id' }
+      responses:
+        '200':
+          description: 판매글 목록 (카드는 도트 이미지 기준)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, limit, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Sale' }
+                  page: { type: integer }
+                  limit: { type: integer }
+                  total: { type: integer }
+
+  /sales/{saleId}:
+    parameters:
+      - $ref: '#/components/parameters/SaleId'
+    get:
+      tags: [Sale]
+      operationId: getSale
+      summary: 판매글 상세 (공개)
+      security: []
+      responses:
+        '200':
+          description: 판매글 상세
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sale' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Sale]
+      operationId: updateSale
+      summary: 판매글 수정 (판매자만, ON_SALE만)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                title: { type: string, maxLength: 20 }
+                description: { type: string }
+                price: { type: integer, format: int64, minimum: 1 }
+                wishCategory: { $ref: '#/components/schemas/Category' }
+                wishDescription: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          description: 수정된 판매글
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sale' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: NOT_ON_SALE
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Sale]
+      operationId: cancelSale
+      summary: 판매글 취소 (판매자만) → CANCELED, 대기 오퍼 REJECTED
+      responses:
+        '204': { description: 취소 완료 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: NOT_ON_SALE
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /sales/{saleId}/purchase:
+    post:
+      tags: [Sale]
+      operationId: purchaseSale
+      summary: 포인트 구매 (SALE 전용)
+      description: 구매자 포인트 차감 → 판매자 지급, 카드 소유권 이전, 판매글 SOLD. 판매자에게 SALE_SOLD 알림.
+      parameters:
+        - $ref: '#/components/parameters/SaleId'
+      responses:
+        '200':
+          description: 구매 완료 (이전된 카드 포함)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sale, card, point]
+                properties:
+                  sale: { $ref: '#/components/schemas/Sale' }
+                  card: { $ref: '#/components/schemas/CardOwned' }
+                  point: { type: integer, format: int64, description: 구매 후 내 잔여 포인트 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402':
+          description: INSUFFICIENT_POINT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: NOT_ON_SALE / SELF_DEAL / WRONG_SALE_TYPE(교환글에 구매 시도)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /sales/{saleId}/exchanges:
+    parameters:
+      - $ref: '#/components/parameters/SaleId'
+    post:
+      tags: [Exchange]
+      operationId: createExchange
+      summary: 교환 오퍼 (EXCHANGE 전용)
+      description: 본인 소유이며 판매 게시 중이 아닌 카드로 오퍼. 같은 카드로 여러 판매글에 동시 오퍼 가능(수락 시 소유권 재검증으로 정합 유지). 판매자에게 EXCHANGE_OFFERED 알림.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [offerCardId]
+              properties:
+                offerCardId: { $ref: '#/components/schemas/Id' }
+                message: { type: string, maxLength: 200 }
+      responses:
+        '201':
+          description: 등록된 오퍼
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Exchange' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '409':
+          description: NOT_ON_SALE / SELF_DEAL / WRONG_SALE_TYPE(판매글에 오퍼 시도) / ALREADY_ON_SALE(오퍼 카드가 판매 게시 중)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [Exchange]
+      operationId: listSaleExchanges
+      summary: 판매글의 오퍼 목록 (판매자만)
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 오퍼 목록 (오퍼 카드 요약 포함)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, limit, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Exchange' }
+                  page: { type: integer }
+                  limit: { type: integer }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /exchanges/{exchangeId}/accept:
+    post:
+      tags: [Exchange]
+      operationId: acceptExchange
+      summary: 오퍼 수락 (판매자만)
+      description: 수락 시점에 오퍼 카드의 현재 소유권(Owner == Offerer)을 재검증한 뒤 두 카드 소유권 맞교환, 판매글 EXCHANGED, 나머지 대기 오퍼 자동 REJECTED. 오퍼러에게 EXCHANGE_ACCEPTED 알림.
+      parameters:
+        - $ref: '#/components/parameters/ExchangeId'
+      responses:
+        '200':
+          description: 수락 완료 (교환으로 받은 카드 포함)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [exchange, receivedCard]
+                properties:
+                  exchange: { $ref: '#/components/schemas/Exchange' }
+                  receivedCard: { $ref: '#/components/schemas/CardOwned' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: EXCHANGE_NOT_PENDING / NOT_ON_SALE(판매글 종료) / OFFER_CARD_UNAVAILABLE(오퍼 카드 소유권 상실 — 해당 오퍼 자동 CANCELED)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /exchanges/{exchangeId}/reject:
+    post:
+      tags: [Exchange]
+      operationId: rejectExchange
+      summary: 오퍼 거절 (판매자만)
+      parameters:
+        - $ref: '#/components/parameters/ExchangeId'
+      responses:
+        '200':
+          description: 거절 완료
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Exchange' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: EXCHANGE_NOT_PENDING
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /exchanges/{exchangeId}:
+    delete:
+      tags: [Exchange]
+      operationId: cancelExchange
+      summary: 오퍼 취소 (오퍼러 본인, PENDING만) → CANCELED
+      parameters:
+        - $ref: '#/components/parameters/ExchangeId'
+      responses:
+        '204': { description: 취소 완료 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: EXCHANGE_NOT_PENDING
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /points/draw:
+    post:
+      tags: [Point]
+      operationId: drawPoint
+      summary: 포인트 뽑기 (하루 1회, Asia/Seoul 자정 리셋)
+      description: '지급표(예시): 10P 50% · 20P 30% · 50P 15% · 100P 5%'
+      responses:
+        '200':
+          description: 뽑기 결과
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [earned, point, nextDrawAt]
+                properties:
+                  earned: { type: integer, description: 획득 포인트 }
+                  point: { type: integer, format: int64, description: 뽑기 후 총 포인트 }
+                  nextDrawAt: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429':
+          description: DRAW_COOLDOWN
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    required: [nextDrawAt]
+                    properties:
+                      nextDrawAt: { type: string, format: date-time }
+
+  /notifications:
+    get:
+      tags: [Notification]
+      operationId: listNotifications
+      summary: 알림 목록 (소프트 삭제분 제외)
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: unreadOnly
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 알림 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, limit, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  page: { type: integer }
+                  limit: { type: integer }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Notification]
+      operationId: deleteAllNotifications
+      summary: 알림 전체 삭제 (소프트 — 화면에서만 제거, 테이블 유지)
+      responses:
+        '204': { description: 삭제 완료 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /notifications/read-all:
+    post:
+      tags: [Notification]
+      operationId: readAllNotifications
+      summary: 알림 전체 읽음
+      responses:
+        '204': { description: 처리 완료 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /notifications/{notificationId}/read:
+    patch:
+      tags: [Notification]
+      operationId: readNotification
+      summary: 알림 개별 읽음
+      description: 본인(User_ID = 인증 주체) 알림만 대상. 타인의 알림은 존재 비노출을 위해 404.
+      parameters:
+        - $ref: '#/components/parameters/NotificationId'
+      responses:
+        '200':
+          description: 읽음 처리된 알림
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /notifications/{notificationId}:
+    delete:
+      tags: [Notification]
+      operationId: deleteNotification
+      summary: 알림 개별 삭제 (소프트)
+      description: 본인 알림만 대상(타인은 404). 미읽음 상태로 삭제 시 unreadCount 차감, 이미 읽은 알림은 무변.
+      parameters:
+        - $ref: '#/components/parameters/NotificationId'
+      responses:
+        '204': { description: 삭제 완료 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    CardId:
+      name: cardId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+    SaleId:
+      name: saleId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+    ExchangeId:
+      name: exchangeId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+    NotificationId:
+      name: notificationId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+
+  responses:
+    ValidationFailed:
+      description: VALIDATION_FAILED
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: UNAUTHORIZED
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: FORBIDDEN
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: NOT_FOUND
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Id:
+      type: string
+      pattern: '^[A-Za-z0-9]{6}$'
+      example: aB3xY9
+
+    Category:
+      type: string
+      enum: [DOG, CAT]
+
+    Provider:
+      type: string
+      enum: [GOOGLE, KAKAO, NAVER]
+
+    SaleType:
+      type: string
+      enum: [SALE, EXCHANGE]
+
+    SaleStatus:
+      type: string
+      enum: [ON_SALE, SOLD, EXCHANGED, CANCELED]
+
+    ExchangeStatus:
+      type: string
+      enum: [PENDING, ACCEPTED, REJECTED, CANCELED]
+
+    NotificationType:
+      type: string
+      enum: [SALE_SOLD, EXCHANGE_OFFERED, EXCHANGE_ACCEPTED, EXCHANGE_REJECTED, SALE_CANCELED]
+
+    TraitCode:
+      type: string
+      description: 'DOG: ENERGIZER(에너자이저)·MY_WAY(마이웨이)·CAPITALIST_SMILE(자본주의 미소)·GRUMPY_BEAST(심기불편 맹수) / CAT: UDADA(우다다)·PRICKLY(까칠도도)·CHURU_HUNTER(츄르헌터)·PUNY_HUMAN(하찮은 닝겐)'
+      enum: [ENERGIZER, MY_WAY, CAPITALIST_SMILE, GRUMPY_BEAST, UDADA, PRICKLY, CHURU_HUNTER, PUNY_HUMAN]
+
+    Score:
+      type: object
+      required: [code, label, percent]
+      properties:
+        code: { $ref: '#/components/schemas/TraitCode' }
+        label: { type: string, example: 우다다 }
+        percent: { type: number, format: float, example: 41.3 }
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: VALIDATION_FAILED }
+        message: { type: string }
+
+    TokenResponse:
+      type: object
+      required: [accessToken, refreshToken, expiresIn, user]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: accessToken 유효 시간(초) }
+        user: { $ref: '#/components/schemas/UserMe' }
+
+    UserMe:
+      type: object
+      required: [id, name, nickname, point, providers, unreadCount, todayCreatedCount, dailyFreeLimit, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, description: 실명 }
+        nickname: { type: string, description: 별명 }
+        email: { type: string, format: email, maxLength: 100, nullable: true, description: 소셜 전용 계정은 null }
+        point: { type: integer, format: int64 }
+        providers:
+          type: array
+          items: { $ref: '#/components/schemas/Provider' }
+        unreadCount: { type: integer }
+        todayCreatedCount: { type: integer, description: 오늘 생성에 성공한 횟수 (카드 삭제·소유권 이전과 무관) }
+        dailyFreeLimit: { type: integer, example: 5 }
+        lastDrawAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    Card:
+      type: object
+      required: [id, owner, ownerNickname, title, category, tag, scores, imageUrl, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        owner: { $ref: '#/components/schemas/Id' }
+        ownerNickname: { type: string }
+        createdOwnerNickname: { type: string, nullable: true, description: 생성 시점 닉네임 스냅샷 (이후 닉네임 변경과 무관) }
+        title: { type: string, maxLength: 30 }
+        category: { $ref: '#/components/schemas/Category' }
+        tag: { type: string, example: 우다다 츄르헌터, description: 상위 2개 지수 label 조합 }
+        scores:
+          type: array
+          items: { $ref: '#/components/schemas/Score' }
+          description: 점수 내림차순 4개
+        description: { type: string, nullable: true }
+        imageUrl: { type: string, example: /api/v1/cards/aB3xY9/image, description: 도트 변환본 (공개) }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CardOwned:
+      allOf:
+        - $ref: '#/components/schemas/Card'
+        - type: object
+          required: [originalImageUrl]
+          properties:
+            originalImageUrl: { type: string, example: /api/v1/cards/aB3xY9/image?type=original, description: 원본 (소유자만 접근) }
+            sale:
+              type: object
+              nullable: true
+              description: 판매 게시 중이면 요약 제공
+              required: [id, type, status]
+              properties:
+                id: { $ref: '#/components/schemas/Id' }
+                type: { $ref: '#/components/schemas/SaleType' }
+                status: { $ref: '#/components/schemas/SaleStatus' }
+
+    Sale:
+      type: object
+      required: [id, type, status, title, seller, sellerNickname, card, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        type: { $ref: '#/components/schemas/SaleType' }
+        status: { $ref: '#/components/schemas/SaleStatus' }
+        title: { type: string, maxLength: 20 }
+        description: { type: string, nullable: true }
+        seller: { $ref: '#/components/schemas/Id' }
+        sellerNickname: { type: string }
+        card: { $ref: '#/components/schemas/Card' }
+        price: { type: integer, format: int64, nullable: true, description: SALE 전용 }
+        wishCategory: { type: string, enum: [DOG, CAT], nullable: true, description: EXCHANGE 전용 }
+        wishDescription: { type: string, nullable: true, maxLength: 200 }
+        exchangeCount: { type: integer, description: 대기 중 오퍼 수 (EXCHANGE 전용) }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time, nullable: true }
+
+    SaleSummary:
+      type: object
+      required: [id, type, status, title]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        type: { $ref: '#/components/schemas/SaleType' }
+        status: { $ref: '#/components/schemas/SaleStatus' }
+        title: { type: string, maxLength: 20 }
+
+    SaleCreateSale:
+      type: object
+      required: [cardId, type, title, price]
+      properties:
+        cardId: { $ref: '#/components/schemas/Id' }
+        type: { type: string, enum: [SALE] }
+        title: { type: string, maxLength: 20 }
+        description: { type: string }
+        price: { type: integer, format: int64, minimum: 1 }
+
+    SaleCreateExchange:
+      type: object
+      required: [cardId, type, title]
+      properties:
+        cardId: { $ref: '#/components/schemas/Id' }
+        type: { type: string, enum: [EXCHANGE] }
+        title: { type: string, maxLength: 20 }
+        description: { type: string }
+        wishCategory: { $ref: '#/components/schemas/Category' }
+        wishDescription: { type: string, maxLength: 200 }
+
+    Exchange:
+      type: object
+      required: [id, saleId, sale, offerer, offererNickname, offerCard, status, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        saleId: { $ref: '#/components/schemas/Id' }
+        sale: { $ref: '#/components/schemas/SaleSummary' }
+        offerer: { $ref: '#/components/schemas/Id' }
+        offererNickname: { type: string }
+        offerCard: { $ref: '#/components/schemas/Card' }
+        message: { type: string, nullable: true, maxLength: 200 }
+        status: { $ref: '#/components/schemas/ExchangeStatus' }
+        createdAt: { type: string, format: date-time }
+        respondedAt: { type: string, format: date-time, nullable: true }
+
+    Notification:
+      type: object
+      required: [id, type, content, isRead, createdAt]
+      properties:
+        id: { type: integer, format: int64 }
+        type: { $ref: '#/components/schemas/NotificationType' }
+        content: { type: string }
+        targetId:
+          type: string
+          pattern: '^[A-Za-z0-9]{6}$'
+          nullable: true
+          description: 'SALE_SOLD·EXCHANGE_OFFERED·SALE_CANCELED → saleId / EXCHANGE_ACCEPTED·EXCHANGE_REJECTED → exchangeId'
+        isRead: { type: boolean }
+        createdAt: { type: string, format: date-time }
